@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "BiliReborn · 哔哩次元转生",
+  "version": "1.1.0",
+  "description": "二次元清理计划：批量清理当前登录账号的B站动态、关注与评论",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.bilibili.com/*",
+        "https://space.bilibili.com/*",
+        "https://t.bilibili.com/*"
+      ],
+      "js": [
+        "wiper.bundle.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "host_permissions": [
+    "https://api.bilibili.com/*",
+    "https://api.vc.bilibili.com/*"
+  ],
+  "permissions": [
+    "storage"
+  ],
+  "icons": {}
+}

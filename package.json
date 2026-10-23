@@ -1,0 +1,26 @@
+{
+  "name": "bili-reborn",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "BiliReborn · 哔哩次元转生 —— 二次元清理计划：批量删除动态 / 取关 / 清理评论",
+  "license": "MIT",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "sync:ui": "node tools/sync-ui.mjs && node tools/patch-ui.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node tests/core.test.mjs && node tests/userscript.test.mjs",
+    "check": "node --check tampermonkey/bili-wiper.user.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.23.1",
+    "typescript": "^5.5.4"
+  },
+  "keywords": [
+    "bilibili",
+    "userscript",
+    "tampermonkey",
+    "cleanup",
+    "account"
+  ]
+}
