@@ -79,42 +79,52 @@ export function parseOidInput(text: string): CommentTarget[] {
  *   item.subject_id  被评论内容的 oid
  *   item.root_id     根评论 id，用它调 reply/reply 一次就能拿到整楼评论
  */
+/**
+ * pn 参数实测无效（pn=1/2/3/4 返回完全相同的 20 条），
+ * 只能靠 ps 扩大单页容量：ps=400 可用，ps=500 触发 WAF。
+ */
+const MSGFEED_PS_LADDER = [400, 200, 100];
+
 export async function collectMsgfeedTargets(): Promise<CommentTarget[]> {
   const map: Record<string, CommentTarget> = {};
   const seen: Record<string, boolean> = {};
 
-  for (let pn = 1; pn <= 20; pn++) {
+  for (const ps of MSGFEED_PS_LADDER) {
     await ctx.runner.gate();
-    const res = await client.get<MsgData>(API.MSGFEED_REPLY, {
-      platform: 'web',
-      build: 0,
-      mobi_app: 'web',
-      pn,
-      ps: 20
-    });
-    if (res.code !== 0) break;
+    try {
+      // maxRetry=1：被 WAF 拦时快速失败，立刻降级
+      const res = await client.get<MsgData>(API.MSGFEED_REPLY, {
+        platform: 'web',
+        build: 0,
+        mobi_app: 'web',
+        pn: 1,
+        ps
+      }, { maxRetry: 1 });
 
-    const items = (res.data && res.data.items) || [];
-    if (items.length === 0) break;
+      if (res.code !== 0) {
+        log.warn('消息中心 ps=' + ps + ' 返回 ' + res.code + '，降级重试');
+        continue;
+      }
 
-    let fresh = 0;
-    for (const it of items) {
-      const src = it.item || {};
-      const oid = src.subject_id || src.oid || 0;
-      const type = src.business_id || COMMENT_TYPE_MAP[src.type || ''] || parseInt(src.type || '0', 10) || 0;
-      if (!oid || !type) continue;
+      const items = (res.data && res.data.items) || [];
+      log.info('消息中心返回 ' + items.length + ' 条回复记录（ps=' + ps + '）');
 
-      const rootId = src.root_id || 0;
-      const key = type + ':' + oid + ':' + rootId;
-      if (seen[key]) continue;
-      seen[key] = true;
-      fresh++;
-      map[key] = { type, oid, rootId, title: src.title, ts: it.reply_time };
+      for (const it of items) {
+        const src = it.item || {};
+        const oid = src.subject_id || src.oid || 0;
+        const type = src.business_id || COMMENT_TYPE_MAP[src.type || ''] || parseInt(src.type || '0', 10) || 0;
+        if (!oid || !type) continue;
+
+        const rootId = src.root_id || 0;
+        const key = type + ':' + oid + ':' + rootId;
+        if (seen[key]) continue;
+        seen[key] = true;
+        map[key] = { type, oid, rootId, title: src.title, ts: it.reply_time };
+      }
+      break;
+    } catch (err) {
+      log.warn('消息中心 ps=' + ps + ' 请求失败（' + (err instanceof Error ? err.message : String(err)) + '），降级重试');
     }
-
-    // 整页都是已见过的楼层，继续翻页没有意义（接口会返回相同数据）
-    if (fresh === 0) break;
-    await ctx.runner.sleepInterruptible(500 + Math.floor(Math.random() * 700));
   }
 
   return Object.keys(map).map(function (k) { return map[k]; });
@@ -214,6 +224,12 @@ export async function wipeComments(oidText: string): Promise<void> {
   } else {
     targets = await collectMsgfeedTargets();
     log.info('从消息中心反查到 ' + targets.length + ' 个楼层');
+    if (targets.length > 30) {
+      log.warn('楼层较多，扫描预计约 ' + Math.ceil(targets.length * 3 / 60) + ' 分钟，期间可随时暂停');
+      if (!ctx.quota.unlimited() && ctx.quota.left() < targets.length) {
+        log.warn('今日剩余配额 ' + ctx.quota.left() + ' 条，少于楼层数；如需全部清理可把每日上限改成 -1');
+      }
+    }
   }
 
   if (targets.length === 0) {

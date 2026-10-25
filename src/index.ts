@@ -123,7 +123,7 @@ function boot(): void {
       });
     }
   });
-  log.info('BiliReborn v1.1.0 已加载');
+  log.info('BiliReborn v1.1.1 已加载');
   log.info('点击右下角「清理」打开面板；建议先在「设置」里跑一次接口自检');
   ensureClient().catch(function (err) {
     log.warn('登录状态检查失败：' + (err instanceof Error ? err.message : String(err)));
@@ -137,7 +137,7 @@ if (document.readyState === 'loading') {
 }
 
 (window as unknown as Record<string, unknown>).__BAW__ = {
-  version: '1.1.0',
+  version: '1.1.1',
   ctx: ctx,
   client: client,
   start: startTask,

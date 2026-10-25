@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BiliReborn · 哔哩次元转生
 // @namespace    https://github.com/bili-reborn
-// @version      1.1.0
+// @version      1.1.1
 // @description  二次元清理计划：批量删除自己的B站动态、批量取消关注、批量删除自己发过的评论。内置随机延迟、指数退避、熔断冷却、演练模式。
 // @author       BiliReborn Contributors
 // @license      MIT
@@ -32,7 +32,7 @@
    * ========================================================================== */
 
   var APP_NAME = 'BiliReborn';
-  var APP_VERSION = '1.1.0';
+  var APP_VERSION = '1.1.1';
   var CFG_KEY = 'baw:config:v1';
   var WBI_KEY = 'baw:wbi:v1';
 
@@ -916,36 +916,54 @@
   }
 
   // 从消息中心收集被评论过的「楼层」。
-  // 真实字段（2026-10 实测）：
+  //
+  // 实测结论（2026-10）：
+  //   1. pn 参数完全无效 —— pn=1/2/3/4 返回的 20 条记录一模一样，
+  //      所以「翻页」拿不到任何新数据，这也是早期版本只能清理 15 个楼层的原因。
+  //   2. ps 有效 —— ps=200 返回 200 条，ps=400 返回 400 条，ps=500 触发 WAF。
+  //   3. 唯一可行策略：一次请求尽量多拿，拿不到就降级。
+  //
+  // 字段：
   //   item.type       恒为 "reply"，不能当评论类型用
   //   item.business_id 才是评论 type：1 视频 / 11 相册 / 12 专栏 / 17 动态
   //   item.subject_id  被评论内容的 oid
   //   item.root_id     根评论 id，用它调 reply/reply 一次就能拿到整楼评论
+
+  var MSGFEED_PS_LADDER = [400, 200, 100];
+
   function collectMsgfeedTargets(client) {
     var map = {};
     var seen = {};
-    var pn = 1;
 
     function finish() {
       return Object.keys(map).map(function (k) { return map[k]; });
     }
 
-    function next() {
-      if (pn > 20) return Promise.resolve(finish());
+    function attempt(idx) {
+      if (idx >= MSGFEED_PS_LADDER.length) {
+        Log.warn('消息中心拉取失败，已尝试页大小 ' + MSGFEED_PS_LADDER.join(' / '));
+        return Promise.resolve(finish());
+      }
+
+      var ps = MSGFEED_PS_LADDER[idx];
       return Runner.gate().then(function () {
+        // maxRetry=1：被 WAF 拦时快速失败，立刻降级，而不是卡在退避里
         return client.get(API.MSGFEED_REPLY, {
           platform: 'web',
           build: 0,
           mobi_app: 'web',
-          pn: pn,
-          ps: 20
-        });
+          pn: 1,
+          ps: ps
+        }, { maxRetry: 1 });
       }).then(function (res) {
-        if (res.code !== 0) return finish();
-        var items = (res.data && res.data.items) || [];
-        if (!items.length) return finish();
+        if (res.code !== 0) {
+          Log.warn('消息中心 ps=' + ps + ' 返回 ' + res.code + '，降级重试');
+          return attempt(idx + 1);
+        }
 
-        var fresh = 0;
+        var items = (res.data && res.data.items) || [];
+        Log.info('消息中心返回 ' + items.length + ' 条回复记录（ps=' + ps + '）');
+
         for (var i = 0; i < items.length; i++) {
           var it = items[i];
           var src = it.item || {};
@@ -957,7 +975,6 @@
           var key = type + ':' + oid + ':' + rootId;
           if (seen[key]) continue;
           seen[key] = true;
-          fresh++;
           map[key] = {
             type: type,
             oid: oid,
@@ -967,14 +984,14 @@
           };
         }
 
-        // 整页都是已见过的楼层，继续翻页没有意义（接口会返回相同数据）
-        if (fresh === 0) return finish();
-        pn++;
-        return sleepInterruptible(randInt(500, 1200)).then(next);
+        return finish();
+      }).catch(function (err) {
+        Log.warn('消息中心 ps=' + ps + ' 请求失败（' + (err && err.message ? err.message : err) + '），降级重试');
+        return attempt(idx + 1);
       });
     }
 
-    return next();
+    return attempt(0);
   }
 
   // 精确扫描某个楼层：根评论 + 该楼全部子回复。
@@ -1079,7 +1096,7 @@
     var prepare = manual.length
       ? Promise.resolve(manual)
       : collectMsgfeedTargets(client).then(function (list) {
-          Log.info('从消息中心反查到 ' + list.length + ' 个被评论过的内容');
+          Log.info('从消息中心反查到 ' + list.length + ' 个楼层');
           return list;
         });
 
@@ -1089,6 +1106,14 @@
         return;
       }
       Log.ok('开始扫描 ' + targets.length + ' 个楼层下的本人评论');
+
+      if (targets.length > 30) {
+        var estMin = Math.ceil(targets.length * 3 / 60);
+        Log.warn('楼层较多，扫描预计需要约 ' + estMin + ' 分钟，期间可随时暂停');
+        if (!Quota.unlimited() && Quota.left() < targets.length) {
+          Log.warn('注意：今日剩余配额 ' + Quota.left() + ' 条，少于楼层数。如需全部清理，可在设置里把每日上限改成 -1');
+        }
+      }
 
       var idx = 0;
       var allFound = [];

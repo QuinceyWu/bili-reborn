@@ -5,7 +5,7 @@ const BANNER = [
   '// ==UserScript==',
   '// @name         BiliReborn · 哔哩次元转生',
   '// @namespace    https://github.com/bili-reborn',
-  '// @version      1.1.0',
+  '// @version      1.1.1',
   '// @description  二次元清理计划：批量删除动态 / 取关 / 清理评论',
   '// @author       BiliReborn Contributors',
   '// @license      MIT',
