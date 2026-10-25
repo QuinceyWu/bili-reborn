@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BiliReborn · 哔哩次元转生
 // @namespace    https://github.com/bili-reborn
-// @version      1.1.1
+// @version      1.1.2
 // @description  二次元清理计划：批量删除自己的B站动态、批量取消关注、批量删除自己发过的评论。内置随机延迟、指数退避、熔断冷却、演练模式。
 // @author       BiliReborn Contributors
 // @license      MIT
@@ -32,7 +32,7 @@
    * ========================================================================== */
 
   var APP_NAME = 'BiliReborn';
-  var APP_VERSION = '1.1.1';
+  var APP_VERSION = '1.1.2';
   var CFG_KEY = 'baw:config:v1';
   var WBI_KEY = 'baw:wbi:v1';
 
@@ -995,37 +995,79 @@
   }
 
   // 精确扫描某个楼层：根评论 + 该楼全部子回复。
-  // 一次请求覆盖整楼，比翻整个评论区快两个数量级，且能准确判断 mid 归属。
+  //
+  // 实测（2026-10）：
+  //   - ps 固定 20，传 50 也只给 20
+  //   - pn 有效，186 条回复需要翻 10 页
+  //   - 根评论只在 pn=1 返回
+  // 早期版本只取 pn=1，楼层回复超过 20 条就会漏掉。
+  var REPLY_PAGE_SIZE = 20;
+  var REPLY_MAX_PAGES = 25;   // 单层最多 500 条回复，超出会在日志提示
+
   function scanRootThread(client, target) {
     if (!target.rootId) return Promise.resolve([]);
-    return Runner.gate().then(function () {
-      return client.get(API.REPLY_REPLY, {
+
+    var found = [];
+    var seen = {};
+    var page = 1;
+    var truncated = false;
+
+    function push(r) {
+      if (!r) return;
+      if (String(r.member && r.member.mid) !== String(client.uid)) return;
+      var rpid = r.rpid_str || String(r.rpid);
+      if (seen[rpid]) return;
+      seen[rpid] = true;
+      found.push({
+        rpid: rpid,
+        content: (r.content && r.content.message) || '',
         type: target.type,
-        oid: target.oid,
-        root: target.rootId,
-        ps: 30,
-        pn: 1
-      }, { noWbi: true });
-    }).then(function (res) {
-      if (res.code !== 0) return [];
-      var d = res.data || {};
-      var found = [];
+        oid: target.oid
+      });
+    }
 
-      function push(r) {
-        if (!r) return;
-        if (String(r.member && r.member.mid) !== String(client.uid)) return;
-        found.push({
-          rpid: r.rpid_str || String(r.rpid),
-          content: (r.content && r.content.message) || '',
-          type: target.type,
-          oid: target.oid
-        });
+    function step() {
+      if (page > REPLY_MAX_PAGES) {
+        truncated = true;
+        return Promise.resolve(found);
       }
+      return Runner.gate().then(function () {
+        return client.get(API.REPLY_REPLY, {
+          type: target.type,
+          oid: target.oid,
+          root: target.rootId,
+          ps: REPLY_PAGE_SIZE,
+          pn: page
+        }, { noWbi: true });
+      }).then(function (res) {
+        if (res.code !== 0) return found;
 
-      push(d.root);
-      var kids = d.replies || [];
-      for (var i = 0; i < kids.length; i++) push(kids[i]);
-      return found;
+        var d = res.data || {};
+        // 根评论只在第一页返回
+        if (page === 1) push(d.root);
+
+        var kids = d.replies || [];
+        for (var i = 0; i < kids.length; i++) push(kids[i]);
+
+        var pg = d.page || {};
+        var count = pg.count || 0;
+        var size = pg.size || REPLY_PAGE_SIZE;
+        var num = pg.num || page;
+
+        if (!kids.length) return found;
+        if (count && num * size >= count) return found;
+        if (kids.length < size) return found;
+
+        page++;
+        return sleepInterruptible(randInt(500, 1100)).then(step);
+      });
+    }
+
+    return step().then(function (list) {
+      if (truncated) {
+        Log.warn('楼层 ' + target.rootId + ' 回复超过 ' + (REPLY_MAX_PAGES * REPLY_PAGE_SIZE) + ' 条，已截断');
+      }
+      return list;
     });
   }
 

@@ -7,7 +7,7 @@
 批量删除动态 · 批量取消关注 · 清理历史评论
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.1.1-green.svg)](https://github.com/QuinceyWu/bili-reborn/releases)
+[![Version](https://img.shields.io/badge/version-1.1.2-green.svg)](https://github.com/QuinceyWu/bili-reborn/releases)
 [![Platform](https://img.shields.io/badge/platform-Tampermonkey-fb7299.svg)](https://www.tampermonkey.net/)
 
 [安装](#安装) · [功能](#功能) · [常见问题](#常见问题) · [设计文档](docs/DESIGN.md)

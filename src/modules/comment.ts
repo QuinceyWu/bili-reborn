@@ -132,37 +132,73 @@ export async function collectMsgfeedTargets(): Promise<CommentTarget[]> {
 
 /**
  * 精确扫描某个楼层：根评论 + 该楼全部子回复。
- * 一次请求覆盖整楼，比翻整个评论区快两个数量级，且能准确判断 mid 归属。
+ *
+ * 实测（2026-10）：
+ *   - ps 固定 20，传 50 也只给 20
+ *   - pn 有效，186 条回复需要翻 10 页
+ *   - 根评论只在 pn=1 返回
+ * 早期版本只取 pn=1，楼层回复超过 20 条就会漏掉。
  */
+const REPLY_PAGE_SIZE = 20;
+const REPLY_MAX_PAGES = 25;
+
 async function scanRootThread(target: CommentTarget): Promise<OwnComment[]> {
   if (!target.rootId) return [];
-  await ctx.runner.gate();
 
-  const res = await client.get<ThreadData>(API.REPLY_REPLY, {
-    type: target.type,
-    oid: target.oid,
-    root: target.rootId,
-    ps: 30,
-    pn: 1
-  }, { noWbi: true });
-
-  if (res.code !== 0) return [];
-
-  const d = res.data || {};
   const found: OwnComment[] = [];
+  const seen: Record<string, boolean> = {};
+  let truncated = false;
+
   const push = (r?: ReplyItem) => {
     if (!r) return;
     if (String(r.member && r.member.mid) !== String(client.uid)) return;
+    const rpid = r.rpid_str || String(r.rpid);
+    if (seen[rpid]) return;
+    seen[rpid] = true;
     found.push({
-      rpid: r.rpid_str || String(r.rpid),
+      rpid,
       content: (r.content && r.content.message) || '',
       type: target.type,
       oid: target.oid
     });
   };
 
-  push(d.root);
-  for (const kid of d.replies || []) push(kid);
+  for (let page = 1; page <= REPLY_MAX_PAGES; page++) {
+    if (page > REPLY_MAX_PAGES) { truncated = true; break; }
+    await ctx.runner.gate();
+
+    const res = await client.get<ThreadData>(API.REPLY_REPLY, {
+      type: target.type,
+      oid: target.oid,
+      root: target.rootId,
+      ps: REPLY_PAGE_SIZE,
+      pn: page
+    }, { noWbi: true });
+
+    if (res.code !== 0) break;
+
+    const d = res.data || {};
+    if (page === 1) push(d.root);
+
+    const kids = d.replies || [];
+    for (const kid of kids) push(kid);
+
+    const pg = (d as unknown as { page?: { count?: number; num?: number; size?: number } }).page || {};
+    const count = pg.count || 0;
+    const size = pg.size || REPLY_PAGE_SIZE;
+    const num = pg.num || page;
+
+    if (kids.length === 0) break;
+    if (count && num * size >= count) break;
+    if (kids.length < size) break;
+    if (page === REPLY_MAX_PAGES) { truncated = true; break; }
+
+    await ctx.runner.sleepInterruptible(500 + Math.floor(Math.random() * 600));
+  }
+
+  if (truncated) {
+    log.warn('楼层 ' + target.rootId + ' 回复超过 ' + REPLY_MAX_PAGES * REPLY_PAGE_SIZE + ' 条，已截断');
+  }
   return found;
 }
 
